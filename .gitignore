@@ -1,0 +1,27 @@
+# Build folder
+build/
+
+# VSCode
+# .vscode/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# ARM build outputs
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.a
+
+# Debug
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

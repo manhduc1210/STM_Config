@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake Configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S", ".",
+        "-B", "build",
+        "-G", "Ninja",
+        "-DCMAKE_TOOLCHAIN_FILE=arm-none-eabi-toolchain.cmake",
+        "-DCMAKE_BUILD_TYPE=Debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake Build",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build", "build"
+      ],
+      "dependsOn": [
+        "CMake Configure"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Flash OpenOCD",
+      "type": "shell",
+      "command": "openocd",
+      "args": [
+        "-f", "interface/stlink.cfg",
+        "-f", "target/stm32f4x.cfg",
+        "-c", "program build/stm32f407_blink.elf verify reset exit"
+      ],
+      "dependsOn": [
+        "CMake Build"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Flash STM32CubeProgrammer",
+      "type": "shell",
+      "command": "STM32_Programmer_CLI",
+      "args": [
+        "-c", "port=SWD",
+        "-w", "build/stm32f407_blink.hex",
+        "-v",
+        "-rst"
+      ],
+      "dependsOn": [
+        "CMake Build"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
