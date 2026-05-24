@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include "stm32f407xx.h"
 
+#define APP_START_ADDRESS 0x08020000UL
+
 #define LED_GREEN_PIN   12U   // PD12 - LD4
 #define LED_ORANGE_PIN  13U   // PD13 - LD3
 
@@ -42,20 +44,16 @@ static void gpio_init(void)
 
 int main(void)
 {
+    SCB->VTOR = APP_START_ADDRESS;
+
     gpio_init();
 
     while (1)
     {
-        // Set PD12, reset PD13
-        // GPIOD->BSRR = (1U << LED_GREEN_PIN) |
-        //               (1U << (LED_ORANGE_PIN + 16U));
+        GPIOD->BSRR = (1U << LED_GREEN_PIN);
+        delay(800000);
 
-        // delay(800000);
-
-        // Reset PD12, set PD13
-        GPIOD->BSRR = (1U << (LED_GREEN_PIN + 16U)) |
-                      (1U << LED_ORANGE_PIN);
-
+        GPIOD->BSRR = (1U << (LED_GREEN_PIN + 16U));
         delay(800000);
     }
 }
