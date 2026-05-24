@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug STM32F407VG OpenOCD",
+      "type": "cortex-debug",
+      "request": "launch",
+
+      "servertype": "openocd",
+      "serverpath": "openocd",
+      "gdbPath": "arm-none-eabi-gdb",
+
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/stm32f407_blink.elf",
+
+      "device": "STM32F407VG",
+      "interface": "swd",
+
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32f4x.cfg"
+      ],
+
+      "runToEntryPoint": "main",
+      "preLaunchTask": "CMake Build",
+
+      "showDevDebugOutput": "raw"
+    }
+  ]
+}
