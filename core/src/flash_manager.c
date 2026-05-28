@@ -4,10 +4,10 @@
 #define FLASH_KEY1  0x45670123UL
 #define FLASH_KEY2  0xCDEF89ABUL
 
-#define FLASH_CR_LOCK     (1U << 31)
-#define FLASH_CR_STRT     (1U << 16)
-#define FLASH_CR_SER      (1U << 1)
-#define FLASH_SR_BSY      (1U << 16)
+// #define FLASH_CR_LOCK     (1U << 31)
+// #define FLASH_CR_STRT     (1U << 16)
+// #define FLASH_CR_SER      (1U << 1)
+// #define FLASH_SR_BSY      (1U << 16)
 
 #define FLASH_CR_PSIZE_X32  (2U << 8)
 
