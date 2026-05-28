@@ -24,9 +24,17 @@ set(COMMON_FLAGS
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTx_FLASH.ld)
 
+file(GLOB APP_SOURCES
+    core/src/*.c
+)
+
+file(GLOB DRIVER_SOURCES
+    app/*.c
+)
+
 add_executable(${TARGET_NAME}.elf
-    app/main.c
-    app/boot_app.c
+    ${APP_SOURCES}
+    ${DRIVER_SOURCES}
     cmsis/device/st/stm32f4xx/system_stm32f4xx.c
     startup/startup_stm32f407xx.s
 )
@@ -35,6 +43,7 @@ target_include_directories(${TARGET_NAME}.elf PRIVATE
     cmsis/core/include
     cmsis/device/st/stm32f4xx/include
     app
+    core/include
 )
 
 target_compile_definitions(${TARGET_NAME}.elf PRIVATE
