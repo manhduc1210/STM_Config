@@ -5,13 +5,13 @@
 
 #define LED_ORANGE_PIN 13U
 
-static void delay(volatile uint32_t count)
-{
-    while (count--)
-    {
-        __asm volatile ("nop");
-    }
-}
+// static void delay(volatile uint32_t count)
+// {
+//     while (count--)
+//     {
+//         __asm volatile ("nop");
+//     }
+// }
 
 static void gpio_init(void)
 {
@@ -26,6 +26,8 @@ int main(void)
 {
     gpio_init();
     uart2_init();
+    const uint8_t msg[] = "BOOTLOADER_UART_OK\r\n";
+    uart2_write(msg, sizeof(msg) - 1);
 
     while (1)
     {

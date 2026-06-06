@@ -25,6 +25,7 @@ void uart2_init(void)
 
     // 115200 baud if APB1 clock = 16 MHz
     USART2->BRR = 0x008B;
+    // USART2->BRR = 0x016D;
 
     USART2->CR1 = 0;
     USART2->CR1 |= (1U << 3);   // TE

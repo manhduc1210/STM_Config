@@ -89,6 +89,8 @@ void ota_process_once(void)
     ota_frame_t frame;
 
     uart2_read_blocking((uint8_t *)&frame, sizeof(frame));
+    // const char msg[] = "FRAME_RX\r\n";
+    // uart2_write((uint8_t*)msg, sizeof(msg)-1);
 
     if (frame.magic != OTA_MAGIC)
     {
