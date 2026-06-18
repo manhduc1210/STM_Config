@@ -24,45 +24,51 @@ set(COMMON_FLAGS
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTx_FLASH.ld)
 
-add_executable(${TARGET_NAME}.elf
-    app/main.c
-    cmsis/device/st/stm32f4xx/system_stm32f4xx.c
-    startup/startup_stm32f407xx.s
-)
+function(add_stm32_app TARGET SOURCE)
+    add_executable(${TARGET}.elf
+        ${SOURCE}
+        cmsis/device/st/stm32f4xx/system_stm32f4xx.c
+        startup/startup_stm32f407xx.s
+    )
 
-target_include_directories(${TARGET_NAME}.elf PRIVATE
-    cmsis/core/include
-    cmsis/device/st/stm32f4xx/include
-)
+    target_include_directories(${TARGET}.elf PRIVATE
+        cmsis/core/include
+        cmsis/device/st/stm32f4xx/include
+    )
 
-target_compile_definitions(${TARGET_NAME}.elf PRIVATE
-    STM32F407xx
-)
+    target_compile_definitions(${TARGET}.elf PRIVATE
+        STM32F407xx
+    )
 
-target_compile_options(${TARGET_NAME}.elf PRIVATE
-    ${COMMON_FLAGS}
-    $<$<COMPILE_LANGUAGE:ASM>:-x assembler-with-cpp>
-)
+    target_compile_options(${TARGET}.elf PRIVATE
+        ${COMMON_FLAGS}
+        $<$<COMPILE_LANGUAGE:ASM>:-x assembler-with-cpp>
+    )
 
-target_link_options(${TARGET_NAME}.elf PRIVATE
-    ${MCU_FLAGS}
-    -T${LINKER_SCRIPT}
-    --specs=nano.specs
-    --specs=nosys.specs
-    -Wl,-Map=${TARGET_NAME}.map
-    -Wl,--gc-sections
-    -Wl,--print-memory-usage
-)
+    target_link_options(${TARGET}.elf PRIVATE
+        ${MCU_FLAGS}
+        -T${LINKER_SCRIPT}
+        --specs=nano.specs
+        --specs=nosys.specs
+        -Wl,-Map=${TARGET}.map
+        -Wl,--gc-sections
+        -Wl,--print-memory-usage
+    )
 
-add_custom_command(TARGET ${TARGET_NAME}.elf POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} -O ihex
-            ${TARGET_NAME}.elf
-            ${TARGET_NAME}.hex
+    add_custom_command(TARGET ${TARGET}.elf POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O ihex
+                ${TARGET}.elf
+                ${TARGET}.hex
 
-    COMMAND ${CMAKE_OBJCOPY} -O binary
-            ${TARGET_NAME}.elf
-            ${TARGET_NAME}.bin
+        COMMAND ${CMAKE_OBJCOPY} -O binary
+                ${TARGET}.elf
+                ${TARGET}.bin
 
-    COMMAND ${CMAKE_SIZE}
-            ${TARGET_NAME}.elf
-)
+        COMMAND ${CMAKE_SIZE}
+                ${TARGET}.elf
+    )
+endfunction()
+
+add_stm32_app(${TARGET_NAME} app/main.c)
+add_stm32_app(stm32_app_v1_1_0 app/app_v1_1_0.c)
+add_stm32_app(stm32_app_v1_2_0 app/app_v1_2_0.c)
