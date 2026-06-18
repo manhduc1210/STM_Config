@@ -31,6 +31,32 @@ static void ota_send_nack(uint32_t seq, uint16_t error)
     ota_send_response(CMD_NACK, seq, error);
 }
 
+static void ota_read_frame_resync(ota_frame_t *frame)
+{
+    uint8_t *raw = (uint8_t *)frame;
+    uint8_t byte;
+
+    while (1)
+    {
+        byte = uart2_read_byte_blocking();
+        if (byte != 0x54U)
+        {
+            continue;
+        }
+
+        byte = uart2_read_byte_blocking();
+        if (byte != 0x4FU)
+        {
+            continue;
+        }
+
+        raw[0] = 0x54U;
+        raw[1] = 0x4FU;
+        uart2_read_blocking(&raw[2], sizeof(*frame) - 2U);
+        return;
+    }
+}
+
 static void ota_handle_hello(const ota_frame_t *frame)
 {
     ota_send_ack(frame->sequence);
@@ -88,15 +114,9 @@ void ota_process_once(void)
 {
     ota_frame_t frame;
 
-    uart2_read_blocking((uint8_t *)&frame, sizeof(frame));
+    ota_read_frame_resync(&frame);
     // const char msg[] = "FRAME_RX\r\n";
     // uart2_write((uint8_t*)msg, sizeof(msg)-1);
-
-    if (frame.magic != OTA_MAGIC)
-    {
-        ota_send_nack(0, OTA_ERR_INVALID_CMD);
-        return;
-    }
 
     if (frame.version != OTA_VERSION)
     {

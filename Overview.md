@@ -1,165 +1,116 @@
-# Project Overview
+# STM32 Bootloader Project Overview
 
-## 1. Overview
+## 1. Current Scope
 
-This project is a bare-metal firmware project for the STM32F407. It focuses on a bootloader that can receive OTA commands over UART2 and write data into the flash region reserved for the application. The firmware is currently built with CMake and GCC ARM Embedded (`arm-none-eabi`), producing the artifacts `stm32f407_bld.elf`, `stm32f407_bld.hex`, and `stm32f407_bld.bin`.
+This repository contains a bare-metal STM32F407 bootloader and a nested ESP32-S3
+project that can act as the OTA sender over UART.
 
-Main hardware target:
+The STM32 side builds the `stm32f407_bld` target with CMake and
+`arm-none-eabi-gcc`. Its current job is:
+
+- start from internal flash at `0x08000000`;
+- expose an OTA command protocol on USART2;
+- erase, write, and verify the application slot starting at `0x08020000`;
+- jump to a valid application image when no OTA traffic arrives during the boot
+  window.
+
+The ESP32 side lives in `ESP32_OTA_Config/esp32_ota`. It mounts a SPIFFS image,
+loads a local STM32 firmware binary, and sends it to the STM32 bootloader using
+the same 18-byte OTA frame format.
+
+Main STM32 hardware assumptions:
 
 - MCU: STM32F407VG / Cortex-M4F.
-- Internal flash: 1 MB, starting at `0x08000000`.
-- SRAM: 128 KB, starting at `0x20000000`.
-- UART used for OTA: USART2 on PA2/PA3, baud rate 115200.
-- Status LED: PD13.
+- Flash: 1 MB at `0x08000000`.
+- SRAM: 128 KB at `0x20000000`.
+- CCMRAM: 64 KB at `0x10000000`.
+- OTA UART: USART2 on PA2/PA3 at 115200 8N1.
+- Status GPIO: PD13 is configured as output, but the current main loop no longer
+  toggles it after each frame.
 
-The current target build does not use an RTOS. The `FreeRTOS-Kernel` directory is present in the repository as dependency/vendor source, but `CMakeLists.txt` does not currently add FreeRTOS to the executable, and no FreeRTOS APIs are called from `app/` or `core/`.
+`FreeRTOS-Kernel/` exists in the repository, but the current STM32 firmware
+target does not link it and does not call FreeRTOS APIs.
 
-## 2. Directory Structure
+## 2. Repository Layout
 
 ```text
 .
 |-- app/
-|   |-- main.c
-|   |-- boot_app.c
+|   |-- main.c                 STM32 boot flow and OTA/app-jump selection
+|   |-- boot_app.c             application validation and jump helper
 |   `-- boot_app.h
 |-- core/
 |   |-- include/
-|   |   |-- flash_manager.h
-|   |   |-- ota_protocol.h
-|   |   `-- uart_drv.h
+|   |   |-- flash_manager.h     app-slot address constants and flash API
+|   |   |-- ota_protocol.h      OTA command/status/frame definitions
+|   |   `-- uart_drv.h         USART2 API
 |   `-- src/
-|       |-- flash_manager.c
-|       |-- ota_protocol.c
-|       `-- uart_drv.c
-|-- cmsis/
-|   |-- core/include/
-|   `-- device/st/stm32f4xx/
+|       |-- flash_manager.c     erase/write/verify implementation
+|       |-- ota_protocol.c      OTA frame parser and command handlers
+|       `-- uart_drv.c         USART2 register-level driver
+|-- cmsis/                     CMSIS core/device headers and SystemInit
 |-- startup/
-|   `-- startup_stm32f407xx.s
+|   `-- startup_stm32f407xx.s  vector table and reset handler
 |-- linker/
-|   `-- STM32F407VGTx_FLASH.ld
-|-- FreeRTOS-Kernel/
-|-- test/
-|   |-- send_hello.py
-|   |-- test_erase.py
-|   `-- test_write_chunk.py
-|-- .vscode/
-|   |-- tasks.json
-|   `-- launch.json
+|   `-- STM32F407VGTx_FLASH.ld STM32 memory map and section placement
+|-- test/                      PC-side pyserial smoke tests
+|-- ESP32_OTA_Config/          nested ESP-IDF OTA sender project
+|-- FreeRTOS-Kernel/           present but unused by the STM32 target
 |-- CMakeLists.txt
 |-- arm-none-eabi-toolchain.cmake
-`-- README.md
+|-- README.md
+`-- Overview.md
 ```
 
-Main roles:
+## 3. STM32 Build
 
-- `app/`: firmware entry point and application jump logic.
-- `core/`: peripheral services/drivers and the OTA protocol.
-- `cmsis/`: CMSIS core/device headers and `SystemInit`.
-- `startup/`: vector table, reset handler, `.data`/`.bss` initialization, and the call to `main`.
-- `linker/`: memory map and section layout.
-- `test/`: Python scripts that send OTA frames over serial from a PC.
-- `FreeRTOS-Kernel/`: FreeRTOS vendor source, not currently linked into the firmware.
-- `.vscode/`: VS Code build/flash/debug tasks.
+The root `CMakeLists.txt` defines:
 
-## 3. Build System
+```text
+project(stm32f407_baremetal C ASM)
+TARGET_NAME = stm32f407_bld
+```
 
-### Toolchain
-
-`arm-none-eabi-toolchain.cmake` configures the cross compiler:
-
-- `CMAKE_SYSTEM_NAME Generic`
-- `CMAKE_SYSTEM_PROCESSOR arm`
-- C compiler: `arm-none-eabi-gcc`
-- ASM compiler: `arm-none-eabi-gcc`
-- objcopy: `arm-none-eabi-objcopy`
-- size: `arm-none-eabi-size`
-- C standard: C11
-
-### CMake Target
-
-`CMakeLists.txt` creates this target:
+The executable target is:
 
 ```text
 stm32f407_bld.elf
 ```
 
-Sources included in the target:
+Source inputs:
 
-- All `core/src/*.c`
-- All `app/*.c`
+- `core/src/*.c`
+- `app/*.c`
 - `cmsis/device/st/stm32f4xx/system_stm32f4xx.c`
 - `startup/startup_stm32f407xx.s`
 
-Include directories:
+Important build settings:
 
-- `cmsis/core/include`
-- `cmsis/device/st/stm32f4xx/include`
-- `app`
-- `core/include`
+- compile definition: `STM32F407xx`
+- C standard: C11 from `arm-none-eabi-toolchain.cmake`
+- CPU/FPU flags: `-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`
+- warnings: `-Wall -Wextra -Werror`
+- linker script: `linker/STM32F407VGTx_FLASH.ld`
+- libraries/specs: `--specs=nano.specs --specs=nosys.specs`
+- map output: `stm32f407_bld.map`
+- post-build outputs: `stm32f407_bld.hex` and `stm32f407_bld.bin`
 
-Main compile definition:
+Typical build commands:
 
-```c
-STM32F407xx
-```
-
-MCU flags:
-
-```text
--mcpu=cortex-m4
--mthumb
--mfpu=fpv4-sp-d16
--mfloat-abi=hard
-```
-
-Common flags:
-
-```text
--Wall
--Wextra
--Werror
--ffunction-sections
--fdata-sections
--fno-common
--fmessage-length=0
-```
-
-Link options:
-
-- Linker script: `linker/STM32F407VGTx_FLASH.ld`
-- Newlib nano: `--specs=nano.specs`
-- No syscalls: `--specs=nosys.specs`
-- Garbage collect unused sections: `-Wl,--gc-sections`
-- Generate map file: `stm32f407_bld.map`
-- Print memory usage.
-
-Post-build outputs:
-
-- `stm32f407_bld.hex`
-- `stm32f407_bld.bin`
-- size report from `arm-none-eabi-size`
-
-### Build Commands
-
-According to `README.md`:
-
-```sh
-cmake -S . -B build -G "Ninja" -DCMAKE_TOOLCHAIN_FILE="$PWD/arm-none-eabi-toolchain.cmake"
+```powershell
+cmake -S . -B build -G "Ninja" -DCMAKE_TOOLCHAIN_FILE=arm-none-eabi-toolchain.cmake -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Flash with OpenOCD:
+Flash the STM32 bootloader with OpenOCD:
 
-```sh
+```powershell
 openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program build/stm32f407_bld.elf verify reset exit"
 ```
 
-## 4. Memory Layout
+## 4. STM32 Memory Layout
 
-### Linker Script
-
-`linker/STM32F407VGTx_FLASH.ld` declares:
+The linker script declares:
 
 ```text
 FLASH  : ORIGIN = 0x08000000, LENGTH = 1024K
@@ -167,81 +118,58 @@ RAM    : ORIGIN = 0x20000000, LENGTH = 128K
 CCMRAM : ORIGIN = 0x10000000, LENGTH = 64K
 ```
 
-Stack top:
+The bootloader is linked at the start of flash. The application slot is defined
+in `core/include/flash_manager.h`:
+
+```c
+#define APP_START_ADDRESS   0x08020000UL
+#define APP_END_ADDRESS     0x080EFFFFUL
+#define APP_SLOT_SIZE       (APP_END_ADDRESS - APP_START_ADDRESS + 1UL)
+```
+
+The current flash erase implementation erases STM32F407 sectors 5 through 10:
 
 ```text
-_estack = ORIGIN(RAM) + LENGTH(RAM)
+Sector 5 : 0x08020000 - 0x0803FFFF
+Sector 6 : 0x08040000 - 0x0805FFFF
+Sector 7 : 0x08060000 - 0x0807FFFF
+Sector 8 : 0x08080000 - 0x0809FFFF
+Sector 9 : 0x080A0000 - 0x080BFFFF
+Sector 10: 0x080C0000 - 0x080DFFFF
 ```
 
-Main sections:
+Sector 11 starts at `0x080E0000`. The write/verify range currently allows bytes
+up to `0x080EFFFF`, but erase does not cover sector 11 because the source notes
+reserve metadata near `0x080F0000`. Keep this in mind before placing an app image
+or metadata in the `0x080E0000` range.
 
-- `.isr_vector` is placed at the start of flash.
-- `.text`, `.rodata`, `.ARM.extab`, and `.ARM.exidx` are placed in flash.
-- `.data` runs in RAM but is loaded from flash.
-- `.bss` is placed in RAM.
-- `libc.a`, `libm.a`, and `libgcc.a` are discarded by the linker script.
+## 5. Startup and Clock State
 
-### Bootloader/Application Flash Layout
+`startup/startup_stm32f407xx.s` provides the vector table, reset handler,
+`.data` copy, `.bss` clear, C library init, and call into `main`.
 
-The bootloader is linked to run from `0x08000000`.
+`cmsis/device/st/stm32f4xx/system_stm32f4xx.c` leaves
+`SystemCoreClock = 16000000` by default. `SystemInit()` enables FPU access when
+configured, but the current project does not configure a PLL. The UART driver
+therefore assumes the default 16 MHz clock when setting USART2 baud to 115200.
 
-The application slot is defined in code:
+## 6. STM32 Boot Flow
 
-```c
-APP_START_ADDRESS = 0x08020000
-APP_END_ADDRESS   = 0x080EFFFF
-```
+`app/main.c` now implements a real bootloader decision flow:
 
-Practical meaning:
+1. Initialize PD13 GPIO.
+2. Initialize USART2.
+3. Write the boot banner `BOOTLOADER_UART_OK\r\n`.
+4. Poll for incoming UART data for `BOOTLOADER_OTA_WINDOW_LOOPS`
+   (`8000000UL`) iterations.
+5. If a byte is waiting during that window, enter OTA mode and write
+   `BOOTLOADER_OTA_MODE\r\n`.
+6. If no OTA byte arrives and `boot_app_is_valid()` returns true, write
+   `BOOTLOADER_JUMP_APP\r\n` and jump to the app at `0x08020000`.
+7. If no valid app exists, stay in OTA mode forever.
 
-- Region `0x08000000` up to before `0x08020000`: reserved for the bootloader.
-- Region `0x08020000` to `0x080EFFFF`: reserved for the application image.
-- Sector 11 (`0x080E0000` to `0x080FFFFF`) is noted as not fully erased because metadata is expected to be kept at `0x080F0000`.
-
-Note: `APP_END_ADDRESS` is currently `0x080EFFFF`, but `flash_erase_app_region()` erases sectors 5 through 10, which only covers up to `0x080DFFFF`. Therefore, the region from `0x080E0000` to `0x080EFFFF` is valid for write/verify according to the address range check, but it is not erased by the current erase function. This should be synchronized when the final metadata/application layout is decided.
-
-## 5. Startup and CMSIS
-
-`startup/startup_stm32f407xx.s` is the GCC startup file for STM32F407:
-
-1. Sets the stack pointer from `_estack`.
-2. Calls `SystemInit`.
-3. Copies `.data` from flash to RAM.
-4. Zeroes `.bss`.
-5. Calls `__libc_init_array`.
-6. Calls `main`.
-7. Provides the complete vector table for STM32F407.
-8. Defines default interrupt handlers as weak aliases to `Default_Handler`.
-
-`cmsis/device/st/stm32f4xx/system_stm32f4xx.c` keeps `SystemCoreClock = 16000000` by default. `SystemInit()` mainly enables FPU access if the compiler is configured to use the FPU and does not configure a new PLL. Therefore, the system currently relies on the default 16 MHz HSI clock, matching the UART driver comment that 115200 baud is configured for a 16 MHz APB1 clock.
-
-## 6. Main Runtime Flow
-
-`app/main.c`:
-
-```c
-int main(void)
-{
-    gpio_init();
-    uart2_init();
-
-    while (1)
-    {
-        ota_process_once();
-        GPIOD->ODR ^= (1U << LED_ORANGE_PIN);
-    }
-}
-```
-
-Current flow:
-
-1. Initializes GPIO for LED PD13.
-2. Initializes UART2.
-3. Loops forever:
-   - Calls `ota_process_once()` to read and process exactly one OTA frame.
-   - Toggles LED PD13 after the frame is processed.
-
-Because UART reads are blocking, the LED only toggles after a complete frame has been received and processed. The firmware currently has no timeout or non-blocking receive path.
+Once OTA mode is entered, the firmware repeatedly calls `ota_process_once()` and
+does not return to the app-jump decision.
 
 ## 7. UART Driver
 
@@ -254,26 +182,27 @@ API:
 
 ```c
 void uart2_init(void);
+int uart2_rx_available(void);
 void uart2_write_byte(uint8_t data);
 uint8_t uart2_read_byte_blocking(void);
 void uart2_write(const uint8_t *data, uint32_t len);
 void uart2_read_blocking(uint8_t *data, uint32_t len);
 ```
 
-UART2 configuration:
+USART2 configuration:
 
-- Enables GPIOA clock.
-- Enables USART2 clock.
-- Configures PA2/PA3 as alternate function pins.
-- Uses AF7 for USART2.
-- Sets `USART2->BRR = 0x008B`, corresponding to 115200 baud when APB1 is 16 MHz.
-- Enables TE, RE, and UE.
+- GPIOA clock enabled.
+- USART2 clock enabled.
+- PA2 and PA3 configured as alternate function AF7.
+- `USART2->BRR = 0x008B`, matching 115200 baud with a 16 MHz APB1 clock.
+- Transmit, receive, and USART enable bits are set.
 
-I/O model:
+The driver is intentionally simple:
 
-- Byte write waits for TXE (`USART2->SR bit 7`).
-- Byte read waits for RXNE (`USART2->SR bit 5`).
-- Buffer read/write functions are implemented as blocking byte loops.
+- `uart2_rx_available()` checks RXNE without blocking.
+- byte write waits for TXE.
+- byte read waits for RXNE.
+- buffer read/write functions loop over the byte functions.
 
 ## 8. OTA Protocol
 
@@ -282,9 +211,7 @@ Files:
 - `core/include/ota_protocol.h`
 - `core/src/ota_protocol.c`
 
-### Frame Format
-
-`ota_frame_t` is packed:
+STM32 and ESP32 share this packed 18-byte header:
 
 ```c
 typedef struct __attribute__((packed))
@@ -299,83 +226,58 @@ typedef struct __attribute__((packed))
 } ota_frame_t;
 ```
 
-The current header size is 18 bytes.
-
-Fields:
-
-- `magic`: must be `0x4F54`.
-- `version`: must be `0x01`.
-- `command`: OTA command code.
-- `sequence`: frame sequence number, echoed back in the response.
-- `offset`: offset from `APP_START_ADDRESS` when writing a chunk.
-- `length`: payload length.
-- `crc32`: field exists but is not currently validated.
-
-### Commands
+Constants:
 
 ```c
-CMD_HELLO       = 0x01
-CMD_ERASE_APP   = 0x04
-CMD_WRITE_CHUNK = 0x05
-CMD_ACK         = 0x80
-CMD_NACK        = 0x81
+#define OTA_MAGIC        0x4F54U
+#define OTA_VERSION      0x01U
+#define OTA_MAX_PAYLOAD  1024U
+
+#define CMD_HELLO        0x01U
+#define CMD_ERASE_APP    0x04U
+#define CMD_WRITE_CHUNK  0x05U
+#define CMD_ACK          0x80U
+#define CMD_NACK         0x81U
 ```
 
-### Status/Error Codes
+Status values:
 
 ```c
-OTA_OK                 = 0x0000
-OTA_ERR_INVALID_CMD    = 0x1003
-OTA_ERR_INVALID_LENGTH = 0x1004
-OTA_ERR_FLASH_ERASE    = 0x1008
-OTA_ERR_FLASH_WRITE    = 0x1009
-OTA_ERR_VERIFY         = 0x100A
+OTA_OK                   = 0x0000
+OTA_ERR_INVALID_CMD       = 0x1003
+OTA_ERR_INVALID_LENGTH    = 0x1004
+OTA_ERR_FLASH_ERASE       = 0x1008
+OTA_ERR_FLASH_WRITE       = 0x1009
+OTA_ERR_VERIFY            = 0x100A
 ```
 
-### Response Format
+Responses reuse the same header:
 
-Responses also use `ota_frame_t` as the header:
+- `command` is `CMD_ACK` or `CMD_NACK`;
+- `sequence` echoes the request sequence;
+- `offset` is 0;
+- `length` is 2;
+- payload is a little-endian `uint16_t status`;
+- `crc32` is currently 0.
 
-- `command`: `CMD_ACK` or `CMD_NACK`.
-- `sequence`: request sequence.
-- `offset`: 0.
-- `length`: 2 bytes.
-- payload: `uint16_t status`.
-- `crc32`: 0.
+The STM32 parser now resynchronizes on the little-endian magic bytes
+`54 4F`. `ota_read_frame_resync()` reads bytes until it finds that pair, then
+reads the remaining 16 bytes of the header. This lets the bootloader ignore text
+banners or stale bytes on the same UART before a binary frame.
 
-### Processing Flow
+Implemented command behavior:
 
-`ota_process_once()`:
+- `CMD_HELLO`: ACK with `OTA_OK`.
+- `CMD_ERASE_APP`: erase sectors 5 through 10, then ACK or NACK.
+- `CMD_WRITE_CHUNK`: read payload, write to `APP_START_ADDRESS + offset`,
+  verify the bytes, then ACK or NACK.
 
-1. Blocking-reads an 18-byte header from UART2.
-2. Checks `magic`.
-3. Checks `version`.
-4. Dispatches by `command`:
-   - `CMD_HELLO`: returns ACK.
-   - `CMD_ERASE_APP`: erases the application region.
-   - `CMD_WRITE_CHUNK`: reads payload, writes flash, verifies, and returns ACK/NACK.
-   - default: returns NACK with invalid command.
+Current protocol limitations:
 
-`CMD_WRITE_CHUNK`:
-
-1. Checks that `length != 0` and `length <= OTA_MAX_PAYLOAD`.
-2. Blocking-reads payload into `g_payload`.
-3. Calculates the destination address:
-
-```c
-write_addr = APP_START_ADDRESS + frame->offset;
-```
-
-4. Calls `flash_write_bytes`.
-5. Calls `flash_verify_bytes`.
-6. Returns ACK if both steps succeed.
-
-Current limitations:
-
-- `crc32` is not used for integrity checking yet.
-- There is no resynchronization if the byte stream becomes misaligned.
-- There is no UART timeout.
-- There is no boot/jump-app command in the current OTA protocol.
+- `crc32` is present in the frame but not validated.
+- UART reads inside a frame are blocking and have no timeout.
+- There is no explicit finalize, image metadata, rollback, or jump command.
+- Image authenticity and version checks are not implemented.
 
 ## 9. Flash Manager
 
@@ -392,221 +294,227 @@ flash_status_t flash_write_bytes(uint32_t address, const uint8_t *data, uint32_t
 flash_status_t flash_verify_bytes(uint32_t address, const uint8_t *data, uint32_t len);
 ```
 
-Status:
-
-```c
-FLASH_OK
-FLASH_ERR_INVALID_ADDRESS
-FLASH_ERR_INVALID_LENGTH
-FLASH_ERR_ERASE
-FLASH_ERR_WRITE
-FLASH_ERR_VERIFY
-```
-
-### Erase
-
 `flash_erase_app_region()`:
 
-1. Unlocks flash with these keys:
-   - `0x45670123`
-   - `0xCDEF89AB`
-2. Clears common error flags.
-3. Erases sectors 5 through 10.
-4. Locks flash.
-5. Returns `FLASH_OK`.
-
-STM32F407 1 MB flash sector map in the code:
-
-```text
-Sector 0 : 0x08000000 - 0x08003FFF  16 KB
-Sector 1 : 0x08004000 - 0x08007FFF  16 KB
-Sector 2 : 0x08008000 - 0x0800BFFF  16 KB
-Sector 3 : 0x0800C000 - 0x0800FFFF  16 KB
-Sector 4 : 0x08010000 - 0x0801FFFF  64 KB
-Sector 5 : 0x08020000 - 0x0803FFFF 128 KB
-Sector 6 : 0x08040000 - 0x0805FFFF 128 KB
-Sector 7 : 0x08060000 - 0x0807FFFF 128 KB
-Sector 8 : 0x08080000 - 0x0809FFFF 128 KB
-Sector 9 : 0x080A0000 - 0x080BFFFF 128 KB
-Sector 10: 0x080C0000 - 0x080DFFFF 128 KB
-Sector 11: 0x080E0000 - 0x080FFFFF 128 KB
-```
-
-### Write
+- unlocks flash with STM32F4 key values;
+- clears common flash status/error bits;
+- erases sectors 5 through 10;
+- locks flash;
+- currently returns `FLASH_OK` without checking per-sector error status after
+  each erase.
 
 `flash_write_bytes()`:
 
-1. Checks the range:
-   - `len` must be non-zero.
-   - `address >= APP_START_ADDRESS`.
-   - `address + len - 1 <= APP_END_ADDRESS`.
-2. Unlocks flash.
-3. Clears error flags.
-4. Programs by byte (`PSIZE = x8`).
-5. Reads each byte back immediately for checking.
-6. Locks flash.
+- rejects zero-length writes;
+- rejects addresses before `APP_START_ADDRESS`;
+- rejects writes beyond `APP_END_ADDRESS`;
+- unlocks flash and clears errors;
+- programs one byte at a time with `PSIZE = x8`;
+- reads each byte back immediately;
+- locks flash before returning.
 
-Byte programming is easy to test but slower than word or half-word programming.
+`flash_verify_bytes()` performs the same range checks and compares flash against
+the supplied buffer byte by byte.
 
-### Verify
-
-`flash_verify_bytes()` checks the range and compares each byte in flash against the input buffer.
-
-## 10. Boot App Module
+## 10. Application Jump
 
 Files:
 
 - `app/boot_app.h`
 - `app/boot_app.c`
 
-This module prepares the bootloader to jump to the application at:
+`boot_app_is_valid()` reads the initial MSP and reset handler from
+`APP_START_ADDRESS`.
 
-```c
-APP_START_ADDRESS = 0x08020000
-```
+Validation rules:
 
-`boot_app_is_valid()`:
-
-1. Reads the initial MSP at `APP_START_ADDRESS`.
-2. Reads the reset handler at `APP_START_ADDRESS + 4`.
-3. Requires the MSP to be in SRAM:
-   - `0x20000000` to `0x20020000`.
-4. Requires the reset handler to be in application flash:
-   - `APP_START_ADDRESS` to `0x080FFFFF`.
+- MSP must be in SRAM: `0x20000000` through `0x20020000`.
+- reset handler must be in application flash: `0x08020000` through
+  `0x080FFFFF`.
 
 `boot_jump_to_app()`:
 
-1. Reads the application MSP and reset handler.
-2. Disables interrupts.
-3. Disables SysTick.
-4. Disables and clears pending IRQs in NVIC.
-5. Sets `SCB->VTOR = APP_START_ADDRESS`.
-6. Sets MSP with `__set_MSP(app_msp)`.
-7. Casts the reset handler and calls the application entry point.
+1. disables interrupts;
+2. disables SysTick;
+3. disables and clears pending NVIC IRQs;
+4. sets `SCB->VTOR = APP_START_ADDRESS`;
+5. sets MSP to the application's initial stack pointer;
+6. calls the application reset handler.
 
-Currently, `main.c` does not call `boot_app_is_valid()` or `boot_jump_to_app()`. The module exists but is not yet connected to the main boot flow.
+This jump path is now connected from `main.c` after the initial OTA window.
 
-## 11. Test Scripts
+## 11. PC-Side Test Scripts
 
-The `test/` directory contains Python scripts that use `pyserial`.
+The `test/` directory contains small `pyserial` scripts for direct PC-to-STM32
+testing.
 
-### `test/test_erase.py`
+Current scripts:
 
-- Default port: `COM5`.
-- Baud rate: 115200.
-- Sends command `CMD_ERASE_APP = 0x04`.
-- Header format: `<HBBIIHI`, matching the current `ota_frame_t`.
-- Reads an 18-byte response header and a 2-byte status payload.
+- `test/test.py`: reads 100 bytes from `COM9` at 115200, useful for seeing the
+  STM32 boot banners.
+- `test/test_erase.py`: sends `CMD_ERASE_APP` on `COM9`, uses a 20 second serial
+  timeout, scans for response magic `54 4F`, and prints the ACK/NACK status.
+- `test/test_write_chunk.py`: sends erase, then writes a 16-byte payload at
+  offset 0 and expects ACK/status OK.
+- `test/send_hello.py`: still appears stale. It uses `CMD_HELLO = 0x55` and a
+  14-byte header format, while the current firmware expects `CMD_HELLO = 0x01`
+  and the 18-byte header.
 
-### `test/test_write_chunk.py`
-
-- Default port: `COM5`.
-- Baud rate: 115200.
-- Sends erase first.
-- Then sends `CMD_WRITE_CHUNK = 0x05`.
-- Test payload is 16 bytes.
-- Expects response ACK (`0x80`) and status `0x0000`.
-
-### `test/send_hello.py`
-
-This script appears to follow an older protocol:
-
-- `CMD_HELLO = 0x55`, while the current firmware defines `CMD_HELLO = 0x01`.
-- Header format `<HBBIHI` is 14 bytes and does not include the `offset` field.
-- The current firmware reads an 18-byte header.
-
-Therefore, `send_hello.py` is currently incompatible with `ota_protocol.c` unless it is updated.
-
-## 12. VS Code Configuration
-
-`.vscode/tasks.json` contains tasks for:
-
-- `CMake Configure`
-- `CMake Build`
-- `Flash OpenOCD`
-- `Flash STM32CubeProgrammer`
-
-`.vscode/launch.json` configures Cortex-Debug/OpenOCD debugging.
-
-Current note:
-
-- The current CMake target is `stm32f407_bld`.
-- Some task/debug entries in `.vscode` still point to old artifacts:
-  - `build/stm32f407_blink.elf`
-  - `build/stm32f407_blink.hex`
-
-If VS Code tasks are used for flashing/debugging, these should be changed to:
+The known 16-byte test payload is:
 
 ```text
-build/stm32f407_bld.elf
-build/stm32f407_bld.hex
+11 22 33 44 55 66 77 88 99 AA BB CC DD EE 12 34
 ```
 
-## 13. FreeRTOS-Kernel
+When read with OpenOCD as little-endian words from `0x08020000`, it should show:
 
-The repository contains a full `FreeRTOS-Kernel` directory with source, includes, portable ports, examples, license, and documentation. However, the main firmware target does not currently use it:
+```text
+44332211 88776655 ccbbaa99 3412eedd
+```
 
-- There is no `add_subdirectory(FreeRTOS-Kernel)` in the root `CMakeLists.txt`.
-- `FreeRTOS.h` is not included from `app/` or `core/`.
-- No tasks or scheduler are created.
+## 12. ESP32 OTA Sender
 
-This can be treated as a prepared dependency for future integration.
+The nested ESP-IDF project is under:
 
-## 14. Build Output Status
+```text
+ESP32_OTA_Config/esp32_ota
+```
 
-The `build/` directory currently contains:
+Important files:
 
-- `stm32f407_bld.elf`
-- `stm32f407_bld.hex`
-- `stm32f407_bld.bin`
-- `stm32f407_bld.map`
+- `main/app_main.c`
+- `main/ota_master.c`
+- `main/ota_master.h`
+- `main/ota_packet.h`
+- `main/stm32_uart_transport.c`
+- `main/stm32_uart_transport.h`
+- `partitions.csv`
+- `spiffs_image/stm32_app_v1_1_0.bin`
+- `spiffs_image/stm32_app_v1_2_0.bin`
 
-Observed file sizes:
+`main/app_main.c` currently:
 
-- `.bin`: about 1.8 KB.
-- `.elf`: about 11.8 KB.
-- `.hex`: about 5.2 KB.
-- `.map`: about 68.9 KB.
+1. initializes the STM32 UART transport;
+2. mounts SPIFFS partition `storage` at `/spiffs`;
+3. checks for `/spiffs/stm32_app_v1_2_0.bin`;
+4. waits 1 second;
+5. calls `ota_master_send_local_firmware()`;
+6. logs `Step 7 OTA transfer complete` on success.
 
-## 15. Current Technical Notes
+`main/ota_master.c` implements the file transfer:
 
-Important points for future development:
+- sends `HELLO` with retry;
+- sends `ERASE_APP` with retry;
+- reads the firmware file in chunks of up to `OTA_MAX_PAYLOAD` bytes;
+- sends each chunk as `CMD_WRITE_CHUNK`;
+- retries failed commands up to 3 times;
+- logs progress percentages.
 
-- `ota_process_once()` is fully blocking on UART; if a full frame is not received, the firmware waits indefinitely.
-- `crc32` in the frame is not verified yet.
-- There is no timeout, retry, frame resynchronization, or framing marker beyond `magic`.
-- `flash_erase_app_region()` does not check erase errors after each sector and currently always returns `FLASH_OK`.
-- The write range allows addresses up to `0x080EFFFF`, but erase only covers sectors 5 through 10, meaning `0x080E0000` to `0x080EFFFF` is not erased.
-- `FLASH_CR_PSIZE_X32` is defined but unused.
-- `boot_app.c` has application jump logic but it is not called from `main`.
-- `.vscode` and `README.md` contain traces of the old target name `stm32f407_blink`, while CMake currently builds `stm32f407_bld`.
-- `test/send_hello.py` does not match the current protocol.
-- `FreeRTOS-Kernel` is not part of the current build.
+ESP32 UART settings in `main/stm32_uart_transport.c`:
 
-## 16. Expected OTA Flow From Host
+```text
+UART port       : UART_NUM_1
+Baudrate        : 115200
+TX pin          : GPIO17
+RX pin          : GPIO18
+RX/TX buffer    : 2048 bytes
+ACK timeout     : 3000 ms
+ERASE timeout   : 30000 ms
+WRITE timeout   : 5000 ms
+HELLO retries   : 3
+Retry delay     : 100 ms
+Flow control    : disabled
+```
 
-A minimal OTA flow based on the current code:
+Wiring:
 
-1. Host opens serial `COMx` at 115200 baud.
-2. Sends `CMD_HELLO` to check bootloader response.
-3. Sends `CMD_ERASE_APP` to erase the application region.
-4. Splits the application firmware into chunks of up to 1024 bytes.
-5. For each chunk:
-   - `offset` is the chunk position relative to `APP_START_ADDRESS`.
-   - `length` is the chunk size in bytes.
-   - payload is binary data.
-   - waits for ACK before sending the next chunk.
-6. After writing is complete, the flow still needs an image validation and jump-app step, but this command/flow is not implemented in the current OTA protocol yet.
+```text
+ESP32 GPIO17 TX  ---> STM32 PA3 USART2_RX
+ESP32 GPIO18 RX  <--- STM32 PA2 USART2_TX
+ESP32 GND        ---- STM32 GND
+```
 
-## 17. Short Summary
+The ESP32 response parser also scans for `54 4F`, so it can ignore STM32 text
+such as `BOOTLOADER_UART_OK` before binary ACK/NACK frames.
 
-This project is currently a minimal bare-metal STM32F407 bootloader:
+The ESP32 partition table includes a SPIFFS `storage` partition of `0xF0000`
+bytes, and `main/CMakeLists.txt` creates the SPIFFS image from
+`../spiffs_image` with `FLASH_IN_PROJECT`.
 
-- Built with CMake and `arm-none-eabi-gcc`.
-- Startup/linker/CMSIS code handles reset, vector table, and memory sections.
-- Blocking UART2 is used as the OTA transport.
-- OTA uses a binary frame with an 18-byte header and supports hello/erase/write-chunk.
-- Flash manager erases sectors 5-10 and writes the app from `0x08020000`.
-- Application jump logic exists but is not connected to the main loop yet.
-- Serial test scripts exist for erase/write.
-- FreeRTOS is present in the repository but not used by the main firmware.
+Typical ESP32 commands:
+
+```powershell
+cd ESP32_OTA_Config\esp32_ota
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COMx flash monitor
+```
+
+## 13. End-to-End Test Flow
+
+1. Build the STM32 bootloader:
+
+   ```powershell
+   cmake --build build
+   ```
+
+2. Flash the STM32 bootloader:
+
+   ```powershell
+   openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program build/stm32f407_bld.elf verify reset exit"
+   ```
+
+3. Wire ESP32 UART1 to STM32 USART2:
+
+   ```text
+   ESP32 GPIO17 TX -> STM32 PA3
+   ESP32 GPIO18 RX <- STM32 PA2
+   GND             -> GND
+   ```
+
+4. Build and flash the ESP32 project:
+
+   ```powershell
+   cd ESP32_OTA_Config\esp32_ota
+   idf.py build
+   idf.py -p COMx flash monitor
+   ```
+
+5. Confirm ESP32 logs show successful HELLO, ERASE_APP, WRITE_CHUNK transfers,
+   progress, and `Step 7 OTA transfer complete`.
+
+6. Verify STM32 flash contents when using the known test payload or a known app
+   image:
+
+   ```powershell
+   openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init; reset halt; mdw 0x08020000 4; shutdown"
+   ```
+
+7. Reset STM32 with no OTA byte arriving during the boot window. If the image at
+   `0x08020000` has a valid MSP and reset handler, the bootloader should print
+   `BOOTLOADER_JUMP_APP` and jump to it.
+
+## 14. Current Mismatches and Notes
+
+- `.vscode/tasks.json`, `.vscode/launch.json`, and part of `README.md` still
+  reference `stm32f407_blink` artifacts. The current CMake target is
+  `stm32f407_bld`.
+- `test/send_hello.py` does not match the current OTA command value or header
+  size.
+- `flash_erase_app_region()` does not verify erase errors per sector.
+- `APP_END_ADDRESS` permits writes into part of sector 11, but the erase routine
+  only erases sectors 5 through 10.
+- OTA CRC, image metadata, signature/authenticity, and finalize/jump commands
+  are not implemented yet.
+- STM32 frame body reads are blocking; only the initial boot window uses
+  `uart2_rx_available()` for a non-blocking decision.
+- Several comments in `core/src/flash_manager.c` contain mojibake, but the code
+  intent is still clear from the surrounding logic.
+
+## 15. Short Summary
+
+The current project is no longer only a simple blocking UART bootloader. It now
+has a boot window, UART boot banners, magic-byte OTA resynchronization, app
+validation, and a connected jump-to-application path. The nested ESP32-S3 project
+has progressed from a UART smoke test to a SPIFFS-backed OTA sender that streams
+a local STM32 firmware binary to the bootloader in 1024-byte chunks.

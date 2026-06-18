@@ -39,6 +39,11 @@ void uart2_write_byte(uint8_t data)
     USART2->DR = data;
 }
 
+int uart2_rx_available(void)
+{
+    return (USART2->SR & (1U << 5)) != 0U;
+}
+
 uint8_t uart2_read_byte_blocking(void)
 {
     while (!(USART2->SR & (1U << 5))) {}
